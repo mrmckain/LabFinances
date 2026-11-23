@@ -102,7 +102,7 @@ tr.total td { font-weight: 650; background: #f7f9f5; }
 <div class="toast" id="toast"></div>
 
 <script>
-// Lab Finances: where the lab's money comes from and goes. Admins only.
+// Lab Finances: where the lab's money comes from and goes. Private: only people on fin_viewers (for now, Michael).
 // Uses the Inventory Management (Lab Orders) Supabase project: its accounts and orders, plus the fin_ tables.
 const SUPABASE_URL = 'https://ksqjvvojoscyfyrkzqvm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable__o4tr1F2r1GjhMHjmUOsJw_Gcm7EqCA';
@@ -148,9 +148,11 @@ async function boot() {
   const { data } = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle();
   profile = data;
   if (!profile) { await sb.auth.signOut(); session = null; return renderAuth('That sign-in expired. Please request a new link.'); }
-  if (profile.role !== 'admin') {
+  // Only people on the fin_viewers list (for now, just Michael) can open Lab Finances
+  const { data: allowed } = await sb.rpc('can_see_finances');
+  if (allowed !== true) {
     app.innerHTML = `<div class="auth-wrap"><div class="eyebrow">McKain Research Group</div><h1>Lab Finances</h1>
-      <p class="hint">This page is for lab admins only. You're signed in as ${esc(profile.email || profile.name)}.</p>
+      <p class="hint">This page is private. You're signed in as ${esc(profile.email || profile.name)}.</p>
       <button onclick="signOut()">Sign out</button></div>`;
     return;
   }
@@ -161,7 +163,7 @@ function renderAuth(note) {
   app.innerHTML = `<div class="auth-wrap"><div class="eyebrow">McKain Research Group</div><h1>Lab Finances</h1>
     <label for="email-in">Email</label><input id="email-in" type="email" placeholder="you@ua.edu" autocomplete="email">
     <button class="primary" id="send-link">Email me a sign-in link</button>
-    <p class="hint" id="auth-note" style="margin-top:10px">${esc(note || 'Uses your Lab Orders account. Admins only. If you are signed in to Lab Orders in this browser, you are already signed in here.')}</p></div>`;
+    <p class="hint" id="auth-note" style="margin-top:10px">${esc(note || 'Uses your Lab Orders account. Private to Michael. If you are signed in to Lab Orders in this browser, you are already signed in here.')}</p></div>`;
   const go = async () => {
     const email = document.getElementById('email-in').value.trim(), n = document.getElementById('auth-note');
     if (!email) return;
@@ -670,7 +672,7 @@ function renderAccounts() {
   const m = document.getElementById('main'), L = ledger();
   m.innerHTML = `<div class="card"><h2>Accounts <span class="acts"><button class="primary sm" onclick="editAccount()">+ Add account</button></span></h2>
     <p class="hint" style="margin-bottom:10px">These are the same accounts people choose when they request an order in Lab Orders. Add each account's starting amount
-      (the whole award, or its balance on a given date) so balances and runway can be worked out. Award details here are only visible to admins.</p>
+      (the whole award, or its balance on a given date) so balances and runway can be worked out. Everything on this page is visible only to you.</p>
     <div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Kind</th><th>Sponsor / award</th><th>Dates</th><th class="num">Award or starting amount</th><th class="num">Balance</th><th>In Lab Orders</th></tr></thead><tbody>
     ${D.accounts.map(a => { const det = D.details[a.id] || {}, st = acctStatus(a, L);
       return `<tr class="click" onclick="editAccount(${a.id})"><td><b>${esc(a.name)}</b></td><td>${esc(a.code || '')}</td><td>${esc(KINDS[det.kind] || '—')}</td>
