@@ -108,10 +108,10 @@ const SUPABASE_URL = 'https://ksqjvvojoscyfyrkzqvm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable__o4tr1F2r1GjhMHjmUOsJw_Gcm7EqCA';
 let sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const EXPENSE_CATS = ['Supplies', 'Personnel', 'Sequencing & services', 'Travel', 'Equipment', 'Indirect costs', 'Other'];
+const EXPENSE_CATS = ['Supplies', 'Personnel', 'Sequencing & services', 'Travel', 'Equipment', 'Software & subscriptions', 'Indirect costs', 'Other'];
 const INCOME_CATS = ['Award funds', 'Indirect cost return (ROH)', 'Transfer in', 'Refund', 'Other income'];
 const CAT_COLORS = { 'Supplies': '#007A62', 'Personnel': '#1a5fa5', 'Sequencing & services': '#7b4fb0', 'Travel': '#c27a12',
-  'Equipment': '#984321', 'Indirect costs': '#6b7569', 'Other': '#b8bfb3' };
+  'Equipment': '#984321', 'Software & subscriptions': '#2c8fa3', 'Indirect costs': '#6b7569', 'Other': '#b8bfb3' };
 const KINDS = { grant: 'Grant', startup: 'Startup', roh: 'ROH (indirect return)', operating: 'Operating', gift: 'Gift / endowment', other: 'Other' };
 const OUTPUT_KINDS = { paper: 'Paper', dataset: 'Dataset', samples_sequenced: 'Samples sequenced', grant_awarded: 'Grant awarded', talk: 'Talk / poster', student: 'Student trained', other: 'Other' };
 const FY_START_MONTH = 10;   // University of Alabama fiscal year: October 1 – September 30
@@ -464,6 +464,7 @@ function guessCategory(text) {
   if (/salar|payroll|wage|stipend|fringe|tuition|benefit|student pay|grad asst|postdoc/.test(t)) return 'Personnel';
   if (/travel|airfare|airline|hotel|lodging|mileage|per diem|meal|rental car|registration fee|conference/.test(t)) return 'Travel';
   if (/sequenc|genomic|novogene|psomagen|admera|azenta|genewiz|hudsonalpha|core facility|service center|recharge|illumina service|library prep service/.test(t)) return 'Sequencing & services';
+  if (/software|subscription|license|anthropic|openai|adobe|microsoft|github|zoom/.test(t)) return 'Software & subscriptions';
   if (/equipment|capital|freezer|centrifuge|repair|maintenance|service contract/.test(t)) return 'Equipment';
   if (/indirect|f&a|overhead|facilities and admin/.test(t)) return 'Indirect costs';
   return 'Supplies';
