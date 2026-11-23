@@ -117,7 +117,7 @@ const OUTPUT_KINDS = { paper: 'Paper', dataset: 'Dataset', samples_sequenced: 'S
 const FY_START_MONTH = 10;   // University of Alabama fiscal year: October 1 – September 30
 
 let session = null, profile = null, tab = 'overview';
-const D = { accounts: [], details: {}, txns: [], orders: [], budget: [], planned: [], outputs: [] };
+const D = { accounts: [], details: {}, txns: [], orders: [], budget: [], planned: [], outputs: [], travel: [] };
 const F = { fy: null, acct: '', cat: '', type: '', q: '' };   // transaction filters
 let charts = [];
 const app = document.getElementById('app');
@@ -178,20 +178,21 @@ async function signOut() { await sb.auth.signOut(); session = null; profile = nu
 
 // ── Data ────────────────────────────────────────────────────
 async function loadAll() {
-  const [a, d, t, o, b, p, out] = await Promise.all([
+  const [a, d, t, o, b, p, out, tr] = await Promise.all([
     sb.from('accounts').select('*').order('name'),
     sb.from('fin_account_details').select('*'),
     sb.from('fin_transactions').select('*').order('txn_date', { ascending: false }),
-    sb.from('order_requests').select('id, item_name, vendor, category, account_id, quantity, estimated_cost, actual_cost, status, created_at, decided_at, received_on, requested_by_name'),
+    sb.from('order_requests').select('id, item_name, vendor, category, account_id, quantity, estimated_cost, actual_cost, status, created_at, decided_at, received_on, requested_by, requested_by_name'),
     sb.from('fin_budget_lines').select('*'),
     sb.from('fin_planned').select('*').order('due_date'),
     sb.from('fin_outputs').select('*').order('output_date', { ascending: false }),
+    sb.from('travel_requests').select('*').order('start_date', { ascending: false }),
   ]);
-  const bad = [a, d, t, o, b, p, out].find(r => r.error);
+  const bad = [a, d, t, o, b, p, out, tr].find(r => r.error);
   if (bad) toast('Some data could not load: ' + bad.error.message, true);
   D.accounts = a.data || []; D.txns = t.data || []; D.orders = o.data || [];
   D.details = Object.fromEntries((d.data || []).map(x => [x.account_id, x]));
-  D.budget = b.data || []; D.planned = p.data || []; D.outputs = out.data || [];
+  D.budget = b.data || []; D.planned = p.data || []; D.outputs = out.data || []; D.travel = tr.data || [];
   if (F.fy == null) F.fy = fyOf(today());
 }
 
@@ -207,6 +208,14 @@ function ledger() {
     rows.push({ kind: 'order', id: o.id, date: (o.received_on || o.decided_at || o.created_at || today()).slice(0, 10), account_id: o.account_id, dir: 'expense',
       amount: amt, category: /equipment/i.test(o.category || '') ? 'Equipment' : 'Supplies', payee: o.vendor || '', desc: o.item_name + (o.quantity > 1 ? ` ×${o.quantity}` : ''),
       project: '', src: o.status === 'ordered' ? 'committed' : 'order', estimate: o.actual_cost == null, o });
+  });
+  const paidTrips = new Set(D.txns.filter(t => t.travel_request_id).map(t => t.travel_request_id));
+  D.travel.filter(t => ['approved', 'completed'].includes(t.status) && !paidTrips.has(t.id)).forEach(t => {
+    const amt = Number(t.actual_cost ?? t.approved_amount ?? t.est_total ?? 0);
+    if (!amt) return;
+    rows.push({ kind: 'travel', id: t.id, date: t.start_date, account_id: t.account_id, dir: 'expense', amount: amt, category: 'Travel',
+      payee: t.requested_by_name || '', desc: `${t.event_name}${t.location ? ', ' + t.location : ''}`, project: '',
+      src: t.status === 'approved' ? 'committed' : 'travel', estimate: t.actual_cost == null, tr: t });
   });
   return rows.sort((x, y) => y.date.localeCompare(x.date));
 }
@@ -243,14 +252,14 @@ function expandPlanned() {
 }
 
 // ── Shell ───────────────────────────────────────────────────
-const TABS = [['overview', 'Overview'], ['money', 'Transactions'], ['plan', 'Budget & plan'], ['roi', 'Return on investment'], ['accounts', 'Accounts']];
+const TABS = [['overview', 'Overview'], ['money', 'Transactions'], ['people', 'People'], ['plan', 'Budget & plan'], ['roi', 'Return on investment'], ['accounts', 'Accounts']];
 function render() {
   charts.forEach(c => c.destroy()); charts = [];
   app.innerHTML = `<header class="header"><div><div class="eyebrow">McKain Research Group · For Michael</div><h1>Lab Finances</h1></div>
       <div class="who">${esc(profile.name || profile.email || '')}<a href="https://mckainlab.org/InventoryManagement/" style="color:#9fe6cf">Lab Orders</a><button class="sm" onclick="signOut()">Sign out</button></div></header>
     <nav class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'active' : ''}" onclick="go('${k}')">${l}</button>`).join('')}</nav>
     <main id="main"></main>`;
-  ({ overview: renderOverview, money: renderMoney, plan: renderPlan, roi: renderRoi, accounts: renderAccounts })[tab]();
+  ({ overview: renderOverview, money: renderMoney, people: renderPeople, plan: renderPlan, roi: renderRoi, accounts: renderAccounts })[tab]();
 }
 function go(t) { tab = t; render(); }
 const fyOptions = (sel, withAll) => {
@@ -336,7 +345,7 @@ function renderMoney() {
       <select onchange="F.fy=this.value==='all'?'all':+this.value;drawLedger()">${fyOptions(F.fy, true)}</select>
       <select onchange="F.acct=this.value;drawLedger()">${acctOptions(F.acct)}</select>
       <select onchange="F.cat=this.value;drawLedger()"><option value="">All categories</option>${cats.map(c => `<option${F.cat === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>
-      <select onchange="F.type=this.value;drawLedger()">${[['', 'Everything'], ['expense', 'Money out'], ['income', 'Money in'], ['order', 'From Lab Orders'], ['committed', 'Ordered, not received'], ['import', 'Imported']].map(([v, l]) => `<option value="${v}"${F.type === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <select onchange="F.type=this.value;drawLedger()">${[['', 'Everything'], ['expense', 'Money out'], ['income', 'Money in'], ['order', 'From Lab Orders'], ['travel', 'Travel requests'], ['committed', 'Ordered or approved, not paid'], ['import', 'Imported']].map(([v, l]) => `<option value="${v}"${F.type === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
       <input type="search" placeholder="Search payee, description, project" value="${esc(F.q)}" oninput="F.q=this.value;drawLedger()">
       <span class="hint" id="led-sum"></span></div>
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Account</th><th>Category</th><th>Payee</th><th>Description</th><th>Project</th><th class="num">Amount</th><th>Source</th></tr></thead><tbody id="led-body"></tbody></table></div>
@@ -350,6 +359,7 @@ function filteredLedger() {
   if (F.cat) L = L.filter(r => r.category === F.cat);
   if (F.type === 'expense' || F.type === 'income') L = L.filter(r => r.dir === F.type);
   if (F.type === 'order') L = L.filter(r => r.kind === 'order');
+  if (F.type === 'travel') L = L.filter(r => r.kind === 'travel' || r.t?.travel_request_id);
   if (F.type === 'committed') L = L.filter(r => r.src === 'committed');
   if (F.type === 'import') L = L.filter(r => r.src === 'import');
   const q = F.q.trim().toLowerCase();
@@ -360,9 +370,10 @@ function drawLedger() {
   const L = filteredLedger(), body = document.getElementById('led-body');
   const out = L.filter(r => r.dir === 'expense').reduce((t, r) => t + r.amount, 0), inn = L.filter(r => r.dir === 'income').reduce((t, r) => t + r.amount, 0);
   document.getElementById('led-sum').textContent = `${L.length} entries · ${money(out, true)} out${inn ? ' · ' + money(inn, true) + ' in' : ''}`;
-  const srcPill = r => r.kind === 'order' ? (r.src === 'committed' ? '<span class="pill committed">Ordered</span>' : '<span class="pill order">Lab Orders</span>') + (r.estimate ? ' <span class="hint">estimate</span>' : '')
+  const srcPill = r => r.kind === 'travel' ? (r.src === 'committed' ? '<span class="pill committed">Trip approved</span>' : '<span class="pill order">Trip</span>') + (r.estimate ? ' <span class="hint">approved amount</span>' : '')
+    : r.kind === 'order' ? (r.src === 'committed' ? '<span class="pill committed">Ordered</span>' : '<span class="pill order">Lab Orders</span>') + (r.estimate ? ' <span class="hint">estimate</span>' : '')
     : r.src === 'import' ? '<span class="pill import">Imported</span>' : '<span class="pill">Typed</span>';
-  body.innerHTML = L.length ? L.slice(0, 1500).map(r => `<tr class="click" onclick="${r.kind === 'order' ? `payOrder(${r.id})` : `editTxn(${r.id})`}">
+  body.innerHTML = L.length ? L.slice(0, 1500).map(r => `<tr class="click" onclick="${r.kind === 'order' ? `payOrder(${r.id})` : r.kind === 'travel' ? `payTravel(${r.id})` : `editTxn(${r.id})`}">
       <td>${r.date}</td><td>${esc(acctName(r.account_id))}</td><td>${r.dir === 'income' ? '<span class="pill income">' + esc(r.category) + '</span>' : esc(r.category)}</td>
       <td>${esc(r.payee)}</td><td class="wrap">${esc(r.desc)}</td><td>${esc(r.project)}</td>
       <td class="num ${r.dir === 'income' ? 'pos' : ''}">${r.dir === 'income' ? '+' : ''}${money(r.amount, true)}</td><td>${srcPill(r)}</td></tr>`).join('')
@@ -371,7 +382,7 @@ function drawLedger() {
 function exportLedger() {
   const L = filteredLedger(), cell = v => /[",\n]/.test(String(v ?? '')) ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? '');
   const rows = [['date', 'account', 'direction', 'amount', 'category', 'payee', 'description', 'project', 'source'],
-    ...L.map(r => [r.date, acctName(r.account_id), r.dir, r.amount.toFixed(2), r.category, r.payee, r.desc, r.project, r.kind === 'order' ? 'lab orders' + (r.src === 'committed' ? ' (ordered)' : '') : r.src])];
+    ...L.map(r => [r.date, acctName(r.account_id), r.dir, r.amount.toFixed(2), r.category, r.payee, r.desc, r.project, r.kind === 'order' ? 'lab orders' + (r.src === 'committed' ? ' (ordered)' : '') : r.kind === 'travel' ? 'travel request' + (r.src === 'committed' ? ' (approved)' : '') : r.src])];
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(cell).join(',')).join('\n') + '\n'], { type: 'text/csv' }));
   a.download = `lab-finances-${F.fy === 'all' ? 'all' : 'FY' + F.fy}.csv`; a.click();
@@ -411,15 +422,19 @@ function editTxn(id, preset) {
       <div><label>Project (optional)</label><input id="t-proj" list="proj-list" value="${esc(t.project || '')}" placeholder="e.g. Johnsongrass invasion"></div></div>
     <datalist id="proj-list">${projects().map(p => `<option value="${esc(p)}">`).join('')}</datalist>
     <div><label>Description</label><input id="t-desc" value="${esc(t.description || '')}"></div>
-    <div class="row" style="margin-top:10px"><div><label>Statement reference (optional)</label><input id="t-ref" value="${esc(t.statement_ref || '')}"></div></div>
+    <div class="row" style="margin-top:10px"><div><label>Statement reference (optional)</label><input id="t-ref" value="${esc(t.statement_ref || '')}"></div>
+      <div><label>For (person, optional)</label><input id="t-person" list="person-list" value="${esc(t.person || '')}" placeholder="Who this was spent on"></div></div>
+    <datalist id="person-list">${peopleNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    ${t.travel_request_id ? `<p class="hint">Pays for ${esc(D.travel.find(x => x.id === t.travel_request_id)?.requested_by_name || '')}'s trip to ${esc(D.travel.find(x => x.id === t.travel_request_id)?.event_name || '')}, so the trip isn't counted separately.</p>` : ''}
     ${linked ? `<p class="hint">Pays for the Lab Orders request <b>${esc(linked.item_name)}</b> (${esc(linked.vendor || '')}), so that order isn't counted separately.</p>` : ''}`,
     async bg => {
       const amount = numOrNull(val(bg, 't-amt'));
       if (!(amount >= 0) || amount === null) return 'Enter an amount.';
       if (!val(bg, 't-date')) return 'Enter a date.';
       const row = { direction: val(bg, 't-dir'), txn_date: val(bg, 't-date'), amount, account_id: +val(bg, 't-acct') || null, category: val(bg, 't-cat'),
-        payee: val(bg, 't-payee') || null, project: val(bg, 't-proj') || null, description: val(bg, 't-desc') || null, statement_ref: val(bg, 't-ref') || null };
+        payee: val(bg, 't-payee') || null, project: val(bg, 't-proj') || null, description: val(bg, 't-desc') || null, statement_ref: val(bg, 't-ref') || null, person: val(bg, 't-person') || null };
       if (!id && t.order_request_id) row.order_request_id = t.order_request_id;
+      if (!id && t.travel_request_id) row.travel_request_id = t.travel_request_id;
       if (id) await ok(sb.from('fin_transactions').update(row).eq('id', id)); else await ok(sb.from('fin_transactions').insert(row));
       await loadAll(); render(); toast('Saved');
     },
@@ -430,6 +445,12 @@ function payOrder(orderId) {
   const o = D.orders.find(x => x.id === orderId);
   editTxn(null, { order_request_id: o.id, account_id: o.account_id, amount: o.actual_cost ?? o.estimated_cost ?? '', txn_date: (o.received_on || o.decided_at || today()).slice(0, 10),
     payee: o.vendor || '', description: o.item_name + (o.quantity > 1 ? ` ×${o.quantity}` : ''), category: /equipment/i.test(o.category || '') ? 'Equipment' : 'Supplies' });
+}
+const peopleNames = () => [...new Set([...D.orders.map(o => o.requested_by_name), ...D.travel.map(t => t.requested_by_name), ...D.txns.map(t => t.person)].filter(Boolean))].sort();
+function payTravel(id) {
+  const t = D.travel.find(x => x.id === id);
+  editTxn(null, { travel_request_id: t.id, account_id: t.account_id, amount: t.actual_cost ?? t.approved_amount ?? t.est_total ?? '', txn_date: t.start_date,
+    payee: t.requested_by_name || '', person: t.requested_by_name || '', description: `${t.event_name}${t.location ? ', ' + t.location : ''} (${t.start_date} to ${t.end_date})`, category: 'Travel' });
 }
 const projects = () => [...new Set([...D.txns.map(t => t.project), ...D.outputs.map(o => o.project)].filter(Boolean))].sort();
 
@@ -557,6 +578,59 @@ function drawImportPreview(bg) {
   box.querySelectorAll('.im-cat').forEach(s => s.onchange = () => its[+s.dataset.i].category = s.value);
   box.querySelectorAll('.im-ord').forEach(s => s.onchange = () => its[+s.dataset.i].order = +s.value || null);
   box.querySelector('#im-all').onchange = e => { its.forEach(x => { if (!x.bad) x.use = e.target.checked; }); drawImportPreview(bg); };
+}
+
+// ── People: who the money went to ──────────────────────────
+// Orders count by who requested them (office items separately); trips by who travelled.
+let peopleSel = null;
+function personRows(fy) {
+  const inFY = d => fy === 'all' || fyOf(d) === fy;
+  const P = {}, get = n => (P[n] ||= { name: n, supplies: 0, office: 0, travel: 0, trips: 0, pending: 0, items: [] });
+  const txnByOrder = Object.fromEntries(D.txns.filter(t => t.order_request_id).map(t => [t.order_request_id, t]));
+  const txnByTrip = Object.fromEntries(D.txns.filter(t => t.travel_request_id).map(t => [t.travel_request_id, t]));
+  D.orders.filter(o => ['approved', 'ordered', 'received'].includes(o.status)).forEach(o => {
+    const paid = txnByOrder[o.id], amt = Number(paid?.amount ?? o.actual_cost ?? o.estimated_cost ?? 0), d = (paid?.txn_date || o.received_on || o.created_at || '').slice(0, 10);
+    if (!amt || !d || !inFY(d)) return;
+    const p = get(o.requested_by_name || 'Unknown'), office = /office/i.test(o.category || '');
+    p[office ? 'office' : 'supplies'] += amt;
+    p.items.push({ d, what: o.item_name + (o.quantity > 1 ? ` ×${o.quantity}` : ''), kind: office ? 'Office' : 'Supplies', amt, acct: paid?.account_id ?? o.account_id, est: !paid && o.actual_cost == null });
+  });
+  D.travel.forEach(t => {
+    if (!inFY(t.start_date)) return;
+    const p = get(t.requested_by_name || 'Unknown');
+    if (['pending', 'needs_info'].includes(t.status)) { p.pending += Number(t.est_total || 0); return; }
+    if (!['approved', 'completed'].includes(t.status)) return;
+    const paid = txnByTrip[t.id], amt = Number(paid?.amount ?? t.actual_cost ?? t.approved_amount ?? t.est_total ?? 0);
+    p.travel += amt; p.trips++;
+    p.items.push({ d: t.start_date, what: `${t.event_name}${t.location ? ', ' + t.location : ''}`, kind: 'Travel', amt, acct: paid?.account_id ?? t.account_id, est: !paid && t.actual_cost == null });
+  });
+  D.txns.filter(t => t.person && !t.order_request_id && !t.travel_request_id && t.direction === 'expense' && inFY(t.txn_date)).forEach(t => {
+    const p = get(t.person), k = t.category === 'Travel' ? 'travel' : /office/i.test(t.category + ' ' + (t.description || '')) ? 'office' : 'supplies';
+    p[k] += Number(t.amount);
+    p.items.push({ d: t.txn_date, what: t.description || t.payee || t.category, kind: k === 'travel' ? 'Travel' : k === 'office' ? 'Office' : 'Supplies', amt: Number(t.amount), acct: t.account_id, est: false });
+  });
+  return Object.values(P).map(p => ({ ...p, total: p.supplies + p.office + p.travel })).sort((a, b) => b.total - a.total);
+}
+function renderPeople() {
+  const m = document.getElementById('main'), fy = F.fy === 'all' ? 'all' : (typeof F.fy === 'number' ? F.fy : fyOf(today()));
+  const rows = personRows(fy), tot = k => rows.reduce((a, r) => a + r[k], 0);
+  const sel = rows.find(r => r.name === peopleSel);
+  m.innerHTML = `<div class="filters"><select onchange="F.fy=this.value==='all'?'all':+this.value;render()">${fyOptions(fy, true)}</select>
+      <span class="hint">Lab Orders requests count for whoever asked for them; trips for whoever travels; other entries for the person named in their "For" field. The lab supports one conference per person each year.</span></div>
+    <div class="card"><h2>Spending by person${fy === 'all' ? '' : ', ' + fyLabel(fy)}</h2>
+      <div class="table-wrap"><table><thead><tr><th>Person</th><th class="num">Supplies</th><th class="num">Office</th><th class="num">Travel</th><th class="num">Trips</th><th class="num">Total</th><th class="num">Travel requests waiting</th></tr></thead><tbody>
+      ${rows.length ? rows.map(r => `<tr class="click" onclick="peopleSel=${JSON.stringify(r.name).replace(/"/g, '&quot;')};renderPeople()"${r.name === peopleSel ? ' style="background:#eef6f1"' : ''}>
+          <td><b>${esc(r.name)}</b></td><td class="num">${r.supplies ? money(r.supplies) : ''}</td><td class="num">${r.office ? money(r.office) : ''}</td>
+          <td class="num">${r.travel ? money(r.travel) : ''}</td><td class="num">${r.trips ? (r.trips > 1 && fy !== 'all' ? `<span class="pill warn" title="More than the one supported conference">${r.trips}</span>` : r.trips) : ''}</td>
+          <td class="num"><b>${money(r.total)}</b></td><td class="num">${r.pending ? money(r.pending) : ''}</td></tr>`).join('')
+        + `<tr class="total"><td>Everyone</td><td class="num">${money(tot('supplies'))}</td><td class="num">${money(tot('office'))}</td><td class="num">${money(tot('travel'))}</td><td class="num">${rows.reduce((a, r) => a + r.trips, 0)}</td><td class="num">${money(tot('total'))}</td><td class="num">${tot('pending') ? money(tot('pending')) : ''}</td></tr>`
+        : '<tr><td colspan="7"><div class="empty">No requests in this period.</div></td></tr>'}
+      </tbody></table></div>
+      <p class="hint" style="margin-top:8px">Click a person to see what they asked for. Approve or question travel in Lab Orders under Travel → All Travel.</p></div>
+    ${sel ? `<div class="card"><h2>${esc(sel.name)} <span class="acts"><button class="sm" onclick="peopleSel=null;renderPeople()">Close</button></span></h2>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>What</th><th>Type</th><th>Account</th><th class="num">Amount</th></tr></thead><tbody>
+      ${sel.items.sort((a, b) => b.d.localeCompare(a.d)).map(i => `<tr><td>${i.d}</td><td class="wrap">${esc(i.what)}</td><td>${i.kind === 'Travel' ? '<span class="pill income">Travel</span>' : esc(i.kind)}</td><td>${esc(i.acct ? acctName(i.acct) : '')}</td>
+        <td class="num">${money(i.amt, true)}${i.est ? ' <span class="hint">est.</span>' : ''}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
 }
 
 // ── Budget and plan ─────────────────────────────────────────
