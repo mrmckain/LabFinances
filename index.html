@@ -79,6 +79,11 @@ tr.total td { font-weight: 650; background: #f7f9f5; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 820px) { .two { grid-template-columns: 1fr; } .bars .b { grid-template-columns: 110px 1fr 84px; } }
 .chart-box { position: relative; height: 280px; }
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.three .bars .b { grid-template-columns: 110px 1fr 104px; }
+@media (max-width: 1000px) { .three { grid-template-columns: 1fr; } }
+.click-bar { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin-left: -4px; margin-right: -4px; }
+.click-bar:hover { background: #f1f6f2; } .click-bar.on { background: var(--teal-soft); }
 .empty { padding: 26px; text-align: center; color: var(--muted); font-size: 13.5px; }
 .loading { padding: 60px; text-align: center; color: var(--muted); }
 .modal-bg { position: fixed; inset: 0; background: #0006; display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 50; overflow: auto; }
@@ -259,7 +264,7 @@ function render() {
       <div class="who">${esc(profile.name || profile.email || '')}<a href="https://mckainlab.org/InventoryManagement/" style="color:#9fe6cf">Lab Orders</a><button class="sm" onclick="signOut()">Sign out</button></div></header>
     <nav class="tabs">${TABS.map(([k, l]) => `<button class="${tab === k ? 'active' : ''}" onclick="go('${k}')">${l}</button>`).join('')}</nav>
     <main id="main"></main>`;
-  ({ overview: renderOverview, money: renderMoney, people: renderPeople, plan: renderPlan, roi: renderRoi, accounts: renderAccounts })[tab]();
+  ({ overview: renderOverview, money: renderMoney, people: renderPeople, plan: renderPlan, roi: renderRoi, accounts: renderAccounts, acct: renderAcct })[tab]();
 }
 function go(t) { tab = t; render(); }
 const fyOptions = (sel, withAll) => {
@@ -321,7 +326,7 @@ function acctCard(a, st) {
     if (st.usedOfAward > st.elapsed + 0.15) warn.push(['warn', 'Spending ahead of schedule']);
     else if (st.usedOfAward < st.elapsed - 0.25) warn.push(['warn', 'Spending behind schedule']);
   }
-  return `<div class="acct"><h3><span>${esc(a.name)}</span><span class="pill">${esc(KINDS[det.kind] || 'Account')}</span></h3>
+  return `<div class="acct"><h3><span><a onclick="openAcct(${a.id})" style="color:inherit">${esc(a.name)}</a></span><span class="pill">${esc(KINDS[det.kind] || 'Account')}</span></h3>
     <div class="bal ${st.balance < 0 ? 'neg' : ''}">${money(st.balance)}</div>
     <div class="hint">${det.end_date ? `Ends ${det.end_date}${st.monthsLeft != null ? ` · ${Math.max(0, st.monthsLeft).toFixed(1)} months left` : ''}` : 'No end date'}${!det.total_award && det.opening_balance == null ? ' · <a onclick="editAccount(' + a.id + ')">add its starting amount</a>' : ''}</div>
     ${warn.length ? `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${warn.map(([c, t]) => `<span class="pill ${c}">${t}</span>`).join('')}</div>` : ''}
@@ -333,7 +338,131 @@ function acctCard(a, st) {
       <dt>Average monthly spend (6 mo)</dt><dd>${money(st.burn)}</dd>
       <dt>Runway at that rate</dt><dd>${st.runway == null ? '—' : st.runway > 120 ? '10+ years' : st.runway.toFixed(1) + ' months'}</dd>
       <dt>Planned costs to ${det.end_date ? 'end date' : 'next 12 months'}</dt><dd>${money(st.plannedAhead)}</dd>
-      <dt>Projected balance</dt><dd class="${st.projected < 0 ? 'neg' : ''}">${money(st.projected)}</dd></dl></div>`;
+      <dt>Projected balance</dt><dd class="${st.projected < 0 ? 'neg' : ''}">${money(st.projected)}</dd></dl>
+    <button class="sm" style="margin-top:10px;width:100%" onclick="openAcct(${a.id})">Look inside →</button></div>`;
+}
+
+// ── One account, in detail ──────────────────────────────────
+// Opened from an account card ("Look inside") or the Accounts tab. Everything is clickable:
+// a category, vendor or person narrows the list of entries below.
+let acctView = null;
+const AV = { period: 'since', cat: '', payee: '', person: '', q: '' };
+function openAcct(id) { acctView = id; Object.assign(AV, { cat: '', payee: '', person: '', q: '' });
+  const det = D.details[id] || {}; AV.period = det.opening_date ? 'since' : 'all'; tab = 'acct'; render(); window.scrollTo(0, 0); }
+// Who an entry was for: the Lab Orders requester, the traveller, or the "For" field
+function personOf(r) {
+  if (r.o) return r.o.requested_by_name || '';
+  if (r.tr) return r.tr.requested_by_name || '';
+  const t = r.t || {};
+  if (t.person) return t.person;
+  if (t.order_request_id) return D.orders.find(o => o.id === t.order_request_id)?.requested_by_name || '';
+  if (t.travel_request_id) return D.travel.find(x => x.id === t.travel_request_id)?.requested_by_name || '';
+  return '';
+}
+function renderAcct() {
+  const m = document.getElementById('main'), a = D.accounts.find(x => x.id === acctView);
+  if (!a) { tab = 'overview'; return render(); }
+  const L = ledger(), st = acctStatus(a, L), det = st.det;
+  const from = det.opening_balance != null && det.opening_date ? det.opening_date : null;
+  // Every entry on this account, oldest first, with the balance after it (entries after the starting date)
+  const all = L.filter(r => r.account_id === a.id).sort((x, y) => x.date.localeCompare(y.date) || (x.id - y.id));
+  let run = st.base; all.forEach(r => { if (!from || r.date > from) { run += signed(r); r.bal = run; } else r.bal = null; });
+  // Period
+  let inPeriod = all, periodLabel = 'All time';
+  if (AV.period === 'since' && from) { inPeriod = all.filter(r => r.date > from); periodLabel = `Since ${from}`; }
+  else if (/^\d+$/.test(AV.period)) { const [s, e] = fyRange(+AV.period); inPeriod = all.filter(r => r.date >= s && r.date <= e); periodLabel = fyLabel(+AV.period); }
+  const out = inPeriod.filter(r => r.dir === 'expense'), spent = out.reduce((t, r) => t + r.amount, 0);
+  const inn = inPeriod.filter(r => r.dir === 'income').reduce((t, r) => t + r.amount, 0);
+  const committed = inPeriod.filter(r => r.src === 'committed').reduce((t, r) => t + r.amount, 0);
+  const sum = key => { const o = {}; out.forEach(r => { const k = key(r) || '(none)'; o[k] = (o[k] || 0) + r.amount; }); return o; };
+  const byCat = sum(r => r.category), byPayee = sum(r => r.payee), byPerson = sum(personOf);
+  const bars = (obj, field, colorBy) => { const rows = Object.entries(obj).sort((x, y) => y[1] - x[1]).slice(0, 12), max = Math.max(1, ...rows.map(r => r[1]));
+    return rows.length ? `<div class="bars">${rows.map(([k, v]) => `<div class="b click-bar${AV[field] === k ? ' on' : ''}" data-f="${field}" data-v="${esc(k)}" title="Show only ${esc(k)}"><span class="lab">${esc(k)}</span><div class="meter"><span style="width:${v / max * 100}%;${colorBy ? `background:${CAT_COLORS[k] || '#007A62'}` : ''}"></span></div><span class="v">${money(v)} <span class="hint">${spent ? Math.round(v / spent * 100) : 0}%</span></span></div>`).join('')}</div>`
+      : '<div class="empty">No spending in this period.</div>'; };
+  // Entries shown in the table: period + any clicked filter + search
+  const q = AV.q.trim().toLowerCase();
+  const shown = inPeriod.filter(r => (!AV.cat || r.category === AV.cat) && (!AV.payee || (r.payee || '(none)') === AV.payee) && (!AV.person || (personOf(r) || '(none)') === AV.person)
+    && (!q || [r.payee, r.desc, r.project, r.category, personOf(r)].join(' ').toLowerCase().includes(q))).slice().reverse();
+  const shownOut = shown.filter(r => r.dir === 'expense').reduce((t, r) => t + r.amount, 0);
+  const chips = [['cat', 'Category'], ['payee', 'Vendor'], ['person', 'Person']].filter(([f]) => AV[f]).map(([f, l]) => `<span class="pill" style="cursor:pointer" data-clear="${f}">${l}: ${esc(AV[f])} ✕</span>`).join(' ');
+  const biggest = out.slice().sort((x, y) => y.amount - x.amount).slice(0, 8);
+  const planned = expandPlanned().filter(p => p.account_id === a.id && p.due_date >= today()).sort((x, y) => x.due_date.localeCompare(y.due_date));
+  const fys = [...new Set(all.map(r => fyOf(r.date)))].sort((x, y) => y - x);
+  const srcPill = r => r.kind === 'travel' ? (r.src === 'committed' ? '<span class="pill committed">Trip approved</span>' : '<span class="pill order">Trip</span>')
+    : r.kind === 'order' ? (r.src === 'committed' ? '<span class="pill committed">Ordered</span>' : '<span class="pill order">Lab Orders</span>') + (r.estimate ? ' <span class="hint">estimate</span>' : '')
+    : r.src === 'import' ? '<span class="pill import">Imported</span>' : '<span class="pill">Typed</span>';
+  m.innerHTML = `
+    <div class="filters"><button class="sm" onclick="go('overview')">← Overview</button>
+      <select onchange="openAcct(+this.value)">${D.accounts.filter(x => x.active || D.details[x.id]).map(x => `<option value="${x.id}"${x.id === a.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+      <select id="av-period">${from ? `<option value="since"${AV.period === 'since' ? ' selected' : ''}>Since starting balance (${from})</option>` : ''}
+        ${fys.map(y => `<option value="${y}"${AV.period === String(y) ? ' selected' : ''}>${fyLabel(y)}</option>`).join('')}
+        <option value="all"${AV.period === 'all' ? ' selected' : ''}>All time</option></select>
+      <span class="hint">${esc([a.code, KINDS[det.kind], det.sponsor, det.start_date && det.end_date ? det.start_date + ' to ' + det.end_date : ''].filter(Boolean).join(' · '))}</span>
+      <span class="acts" style="margin-left:auto"><button class="sm" onclick="editAccount(${a.id})">Edit account</button></span></div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Balance now</div><div class="v ${st.balance < 0 ? 'neg' : ''}">${money(st.balance, true)}</div><div class="s">${det.opening_balance != null ? `Started at ${money(det.opening_balance, true)}${from ? ' on ' + from : ''}` : det.total_award != null ? `Award ${money(det.total_award)}` : '<a onclick="editAccount(' + a.id + ')">Add its starting amount</a>'}</div></div>
+      <div class="tile"><div class="k">Spent · ${esc(periodLabel)}</div><div class="v">${money(spent, true)}</div><div class="s">${out.length} purchase${out.length === 1 ? '' : 's'}${committed ? ` · ${money(committed)} ordered or approved, not paid` : ''}</div></div>
+      <div class="tile"><div class="k">Money in · ${esc(periodLabel)}</div><div class="v">${money(inn, true)}</div><div class="s">Deposits, transfers, refunds</div></div>
+      <div class="tile"><div class="k">Planned ahead</div><div class="v">${money(st.plannedAhead)}</div><div class="s">Projected balance ${money(st.projected)}${st.balance <= 0 ? ' · no runway left' : st.runway != null ? ` · ${st.runway > 120 ? '10+ years' : st.runway.toFixed(1) + ' months'} of runway` : ''}</div></div>
+    </div>
+    <div class="two">
+      <div class="card"><h2>Balance over time</h2><div class="chart-box"><canvas id="ch-bal"></canvas></div></div>
+      <div class="card"><h2>Spending by month · ${esc(periodLabel)}</h2><div class="chart-box"><canvas id="ch-am"></canvas></div></div>
+    </div>
+    <div class="three">
+      <div class="card"><h2>By category</h2>${bars(byCat, 'cat', true)}</div>
+      <div class="card"><h2>By vendor</h2>${bars(byPayee, 'payee')}</div>
+      <div class="card"><h2>By person</h2>${bars(byPerson, 'person')}</div>
+    </div>
+    <p class="hint" style="margin:-6px 0 14px">Click a bar to see just those entries below.</p>
+    ${biggest.length ? `<div class="card"><h2>Biggest purchases · ${esc(periodLabel)}</h2><div class="table-wrap"><table><tbody>
+      ${biggest.map(r => `<tr><td>${r.date}</td><td>${esc(r.category)}</td><td>${esc(r.payee)}</td><td class="wrap">${esc(r.desc)}</td><td>${esc(personOf(r))}</td><td class="num"><b>${money(r.amount, true)}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    <div class="card"><h2>Entries <span class="acts"><button class="sm" onclick="exportAcct()">Download CSV</button></span></h2>
+      <div class="filters"><input type="search" id="av-q" placeholder="Search vendor, description, person" value="${esc(AV.q)}">${chips}
+        <span class="hint">${shown.length} entries · ${money(shownOut, true)} out</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Vendor / payee</th><th>Description</th><th>Person</th><th class="num">Amount</th><th class="num">Balance after</th><th>Source</th></tr></thead><tbody>
+      ${shown.length ? shown.map(r => `<tr class="click" onclick="${r.kind === 'order' ? `payOrder(${r.id})` : r.kind === 'travel' ? `payTravel(${r.id})` : `editTxn(${r.id})`}">
+          <td>${r.date}</td><td>${r.dir === 'income' ? '<span class="pill income">' + esc(r.category) + '</span>' : esc(r.category)}</td><td>${esc(r.payee)}</td><td class="wrap">${esc(r.desc)}</td><td>${esc(personOf(r))}</td>
+          <td class="num ${r.dir === 'income' ? 'pos' : ''}">${r.dir === 'income' ? '+' : '−'}${money(r.amount, true)}</td><td class="num ${r.bal < 0 ? 'neg' : ''}">${r.bal == null ? '<span class="hint">before start</span>' : money(r.bal, true)}</td><td>${srcPill(r)}</td></tr>`).join('')
+        : '<tr><td colspan="8"><div class="empty">No entries match.</div></td></tr>'}</tbody></table></div>
+      <p class="hint" style="margin-top:8px">Click an entry to edit it, or to record what was actually paid for a Lab Orders order or trip.</p></div>
+    ${planned.length ? `<div class="card"><h2>Planned costs ahead <span class="acts"><button class="sm" onclick="planAcct='${a.id}';go('plan')">Edit on Budget &amp; plan</button></span></h2><div class="table-wrap"><table><thead><tr><th>Due</th><th>Category</th><th>What</th><th class="num">Amount</th></tr></thead><tbody>
+      ${planned.slice(0, 24).map(p => `<tr><td>${p.due_date}</td><td>${esc(p.category)}</td><td class="wrap">${esc(p.description)}</td><td class="num">${money(p.amount, true)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+  m.querySelector('#av-period').onchange = e => { AV.period = e.target.value; render(); };
+  const qIn = m.querySelector('#av-q');
+  qIn.oninput = () => { AV.q = qIn.value; const pos = qIn.selectionStart; render(); const n = document.getElementById('av-q'); n.focus(); n.setSelectionRange(pos, pos); };
+  m.querySelectorAll('.click-bar').forEach(b => b.onclick = () => { const f = b.dataset.f, v = b.dataset.v; AV[f] = AV[f] === v ? '' : v; render(); });
+  m.querySelectorAll('[data-clear]').forEach(c => c.onclick = () => { AV[c.dataset.clear] = ''; render(); });
+  // Balance over time (from the starting balance)
+  const pts = all.filter(r => r.bal != null);
+  const start = from || pts[0]?.date;
+  if (start) {
+    const labels = [start, ...pts.map(r => r.date)], vals = [st.base, ...pts.map(r => r.bal)];
+    charts.push(new Chart(document.getElementById('ch-bal'), { type: 'line',
+      data: { labels, datasets: [{ data: vals, stepped: true, borderColor: '#007A62', backgroundColor: '#007A6222', fill: true, pointRadius: 2 }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money(c.raw, true), afterLabel: c => c.dataIndex ? `${pts[c.dataIndex - 1].desc || pts[c.dataIndex - 1].payee}` : 'Starting balance' } } },
+        scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { ticks: { callback: v => money(v) } } } } }));
+  }
+  // Monthly spending in the period, by category
+  if (out.length) {
+    const first = out.reduce((d, r) => r.date < d ? r.date : d, out[0].date), last = out.reduce((d, r) => r.date > d ? r.date : d, out[0].date);
+    const months = []; for (let d = first.slice(0, 7) + '-01'; d.slice(0, 7) <= last.slice(0, 7) && months.length < 60; d = addMonths(d, 1)) months.push(d.slice(0, 7));
+    const cats = [...new Set(out.map(r => r.category))];
+    charts.push(new Chart(document.getElementById('ch-am'), { type: 'bar',
+      data: { labels: months.map(mo => new Date(mo + '-15').toLocaleString('en-US', { month: 'short', year: '2-digit' })),
+        datasets: cats.map(c => ({ label: c, backgroundColor: CAT_COLORS[c] || '#9aa59a', stack: 's', data: months.map(mo => out.filter(r => r.category === c && monthKey(r.date) === mo).reduce((t, r) => t + r.amount, 0)) })) },
+      options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${money(c.raw, true)}` } } },
+        scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { callback: v => money(v) } } } } }));
+  } else document.getElementById('ch-am').parentElement.innerHTML = '<div class="empty">No spending in this period.</div>';
+  window._acctShown = shown;
+}
+function exportAcct() {
+  const a = D.accounts.find(x => x.id === acctView), L = window._acctShown || [], cell = v => /[",\n]/.test(String(v ?? '')) ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? '');
+  const rows = [['date', 'direction', 'amount', 'balance_after', 'category', 'payee', 'description', 'person', 'source'],
+    ...L.map(r => [r.date, r.dir, r.amount.toFixed(2), r.bal == null ? '' : r.bal.toFixed(2), r.category, r.payee, r.desc, personOf(r), r.kind === 'order' ? 'lab orders' : r.kind === 'travel' ? 'travel request' : r.src])];
+  const el = document.createElement('a');
+  el.href = URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(cell).join(',')).join('\n') + '\n'], { type: 'text/csv' }));
+  el.download = `${(a?.name || 'account').replace(/[^\w]+/g, '-')}.csv`; el.click();
 }
 
 // ── Transactions ────────────────────────────────────────────
@@ -748,12 +877,13 @@ function renderAccounts() {
   m.innerHTML = `<div class="card"><h2>Accounts <span class="acts"><button class="primary sm" onclick="editAccount()">+ Add account</button></span></h2>
     <p class="hint" style="margin-bottom:10px">These are the same accounts people choose when they request an order in Lab Orders. Add each account's starting amount
       (the whole award, or its balance on a given date) so balances and runway can be worked out. Everything on this page is visible only to you.</p>
-    <div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Kind</th><th>Sponsor / award</th><th>Dates</th><th class="num">Award or starting amount</th><th class="num">Balance</th><th>In Lab Orders</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Kind</th><th>Sponsor / award</th><th>Dates</th><th class="num">Award or starting amount</th><th class="num">Balance</th><th>In Lab Orders</th><th></th></tr></thead><tbody>
     ${D.accounts.map(a => { const det = D.details[a.id] || {}, st = acctStatus(a, L);
       return `<tr class="click" onclick="editAccount(${a.id})"><td><b>${esc(a.name)}</b></td><td>${esc(a.code || '')}</td><td>${esc(KINDS[det.kind] || '—')}</td>
         <td>${esc([det.sponsor, det.award_number].filter(Boolean).join(' · '))}</td><td>${esc([det.start_date, det.end_date].filter(Boolean).join(' to '))}</td>
         <td class="num">${det.total_award != null ? money(det.total_award) : det.opening_balance != null ? money(det.opening_balance) + ' on ' + esc(det.opening_date || '') : '<span class="hint">not set</span>'}</td>
-        <td class="num ${st.balance < 0 ? 'neg' : ''}">${money(st.balance)}</td><td>${a.active ? 'Shown' : '<span class="hint">Hidden</span>'}</td></tr>`; }).join('')}
+        <td class="num ${st.balance < 0 ? 'neg' : ''}">${money(st.balance)}</td><td>${a.active ? 'Shown' : '<span class="hint">Hidden</span>'}</td>
+        <td><button class="sm" onclick="event.stopPropagation();openAcct(${a.id})">Look inside</button></td></tr>`; }).join('')}
     </tbody></table></div></div>`;
 }
 function editAccount(id) {
