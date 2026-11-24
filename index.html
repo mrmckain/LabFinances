@@ -231,18 +231,23 @@ function acctStatus(acct, L) {
   const det = D.details[acct.id] || {};
   const from = det.opening_balance != null && det.opening_date ? det.opening_date : null;
   const base = det.opening_balance != null ? Number(det.opening_balance) : Number(det.total_award || 0);
-  const mine = L.filter(r => r.account_id === acct.id && (!from || r.date > from));
+  // The balance starts from the starting amount and counts only entries after its date (earlier ones are already in it).
+  // How much and how fast the account is being spent uses every entry, so a recent starting date doesn't hide spending.
+  const every = L.filter(r => r.account_id === acct.id);
+  const mine = every.filter(r => !from || r.date > from);
   const spent = mine.filter(r => r.dir === 'expense').reduce((s, r) => s + r.amount, 0);
-  const committed = mine.filter(r => r.src === 'committed').reduce((s, r) => s + r.amount, 0);
+  const committed = every.filter(r => r.src === 'committed').reduce((s, r) => s + r.amount, 0);
   const income = mine.filter(r => r.dir === 'income').reduce((s, r) => s + r.amount, 0);
   const balance = base + income - spent;
+  const [fyS, fyE] = fyRange(fyOf(today()));
+  const spentFY = every.filter(r => r.dir === 'expense' && r.date >= fyS && r.date <= fyE).reduce((s, r) => s + r.amount, 0);
   const sixAgo = addMonths(today(), -6);
-  const burn = mine.filter(r => r.dir === 'expense' && r.date >= sixAgo && r.date <= today()).reduce((s, r) => s + r.amount, 0) / 6;
+  const burn = every.filter(r => r.dir === 'expense' && r.date >= sixAgo && r.date <= today()).reduce((s, r) => s + r.amount, 0) / 6;
   const horizon = det.end_date || addMonths(today(), 12);
   const plannedAhead = expandPlanned().filter(p => p.account_id === acct.id && p.due_date >= today() && p.due_date <= horizon).reduce((s, p) => s + p.amount, 0);
   const elapsed = det.start_date && det.end_date ? Math.min(1, Math.max(0, (new Date(today()) - new Date(det.start_date)) / (new Date(det.end_date) - new Date(det.start_date)))) : null;
   const usedOfAward = det.total_award ? (Number(det.total_award) - balance) / Number(det.total_award) : null;
-  return { det, base, spent, committed, income, balance, burn, runway: burn > 0 ? balance / burn : null,
+  return { det, base, spent, spentFY, from, committed, income, balance, burn, runway: burn > 0 ? balance / burn : null,
     plannedAhead, projected: balance - plannedAhead, horizon, elapsed, usedOfAward, monthsLeft: det.end_date ? monthsBetween(today(), det.end_date) : null };
 }
 // Planned costs with repeats spelled out into one entry per occurrence
@@ -332,7 +337,8 @@ function acctCard(a, st) {
     ${warn.length ? `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${warn.map(([c, t]) => `<span class="pill ${c}">${t}</span>`).join('')}</div>` : ''}
     ${st.usedOfAward != null ? `<div class="hint" style="margin-top:8px">${Math.round(st.usedOfAward * 100)}% of the award used${st.elapsed != null ? `, ${Math.round(st.elapsed * 100)}% of the time gone` : ''}</div>
       <div class="meter"><span class="${st.usedOfAward > 1 ? 'over' : ''}" style="width:${Math.min(100, Math.max(0, st.usedOfAward * 100))}%"></span>${st.elapsed != null ? `<i style="left:${st.elapsed * 100}%" title="Time elapsed"></i>` : ''}</div>` : ''}
-    <dl><dt>Spent</dt><dd>${money(st.spent)}</dd>
+    <dl><dt>Spent this year (FY${fyOf(today())})</dt><dd>${money(st.spentFY)}</dd>
+      ${st.from ? `<dt>Spent since starting balance (${st.from})</dt><dd>${money(st.spent)}</dd>` : ''}
       ${st.committed ? `<dt>Ordered, not received</dt><dd>${money(st.committed)}</dd>` : ''}
       ${st.income ? `<dt>Money in</dt><dd>${money(st.income)}</dd>` : ''}
       <dt>Average monthly spend (6 mo)</dt><dd>${money(st.burn)}</dd>
@@ -348,7 +354,7 @@ function acctCard(a, st) {
 let acctView = null;
 const AV = { period: 'since', cat: '', payee: '', person: '', q: '' };
 function openAcct(id) { acctView = id; Object.assign(AV, { cat: '', payee: '', person: '', q: '' });
-  const det = D.details[id] || {}; AV.period = det.opening_date ? 'since' : 'all'; tab = 'acct'; render(); window.scrollTo(0, 0); }
+  AV.period = String(fyOf(today())); tab = 'acct'; render(); window.scrollTo(0, 0); }
 // Who an entry was for: the Lab Orders requester, the traveller, or the "For" field
 function personOf(r) {
   if (r.o) return r.o.requested_by_name || '';
@@ -387,7 +393,7 @@ function renderAcct() {
   const chips = [['cat', 'Category'], ['payee', 'Vendor'], ['person', 'Person']].filter(([f]) => AV[f]).map(([f, l]) => `<span class="pill" style="cursor:pointer" data-clear="${f}">${l}: ${esc(AV[f])} ✕</span>`).join(' ');
   const biggest = out.slice().sort((x, y) => y.amount - x.amount).slice(0, 8);
   const planned = expandPlanned().filter(p => p.account_id === a.id && p.due_date >= today()).sort((x, y) => x.due_date.localeCompare(y.due_date));
-  const fys = [...new Set(all.map(r => fyOf(r.date)))].sort((x, y) => y - x);
+  const fys = [...new Set([fyOf(today()), ...all.map(r => fyOf(r.date))])].sort((x, y) => y - x);
   const srcPill = r => r.kind === 'travel' ? (r.src === 'committed' ? '<span class="pill committed">Trip approved</span>' : '<span class="pill order">Trip</span>')
     : r.kind === 'order' ? (r.src === 'committed' ? '<span class="pill committed">Ordered</span>' : '<span class="pill order">Lab Orders</span>') + (r.estimate ? ' <span class="hint">estimate</span>' : '')
     : r.src === 'import' ? '<span class="pill import">Imported</span>' : '<span class="pill">Typed</span>';
@@ -423,7 +429,7 @@ function renderAcct() {
       <div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Vendor / payee</th><th>Description</th><th>Person</th><th class="num">Amount</th><th class="num">Balance after</th><th>Source</th></tr></thead><tbody>
       ${shown.length ? shown.map(r => `<tr class="click" onclick="${r.kind === 'order' ? `payOrder(${r.id})` : r.kind === 'travel' ? `payTravel(${r.id})` : `editTxn(${r.id})`}">
           <td>${r.date}</td><td>${r.dir === 'income' ? '<span class="pill income">' + esc(r.category) + '</span>' : esc(r.category)}</td><td>${esc(r.payee)}</td><td class="wrap">${esc(r.desc)}</td><td>${esc(personOf(r))}</td>
-          <td class="num ${r.dir === 'income' ? 'pos' : ''}">${r.dir === 'income' ? '+' : '−'}${money(r.amount, true)}</td><td class="num ${r.bal < 0 ? 'neg' : ''}">${r.bal == null ? '<span class="hint">before start</span>' : money(r.bal, true)}</td><td>${srcPill(r)}</td></tr>`).join('')
+          <td class="num ${r.dir === 'income' ? 'pos' : ''}">${r.dir === 'income' ? '+' : '−'}${money(r.amount, true)}</td><td class="num ${r.bal < 0 ? 'neg' : ''}">${r.bal == null ? '<span class="hint" title="Dated before the starting balance, so it is already counted in it">in starting balance</span>' : money(r.bal, true)}</td><td>${srcPill(r)}</td></tr>`).join('')
         : '<tr><td colspan="8"><div class="empty">No entries match.</div></td></tr>'}</tbody></table></div>
       <p class="hint" style="margin-top:8px">Click an entry to edit it, or to record what was actually paid for a Lab Orders order or trip.</p></div>
     ${planned.length ? `<div class="card"><h2>Planned costs ahead <span class="acts"><button class="sm" onclick="planAcct='${a.id}';go('plan')">Edit on Budget &amp; plan</button></span></h2><div class="table-wrap"><table><thead><tr><th>Due</th><th>Category</th><th>What</th><th class="num">Amount</th></tr></thead><tbody>
